@@ -1,0 +1,19 @@
+{
+  "name": "job-queue-frontend",
+  "version": "1.0.0",
+  "description": "Frontend proxy for the job queue service",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "lint": "eslint ."
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "express": "4.19.2"
+  },
+  "devDependencies": {
+    "eslint": "8.57.0"
+  }
+}

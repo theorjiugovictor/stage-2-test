@@ -1,0 +1,85 @@
+name: jobqueue
+
+services:
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No `ports:` — Redis is internal only; never exposed on the host
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "${REDIS_CPU_LIMIT}"
+          memory: "${REDIS_MEMORY_LIMIT}"
+
+  # ── API ────────────────────────────────────────────────────────────────────
+  api:
+    image: "${API_IMAGE}"
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - app-network
+    environment:
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "${API_CPU_LIMIT}"
+          memory: "${API_MEMORY_LIMIT}"
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    image: "${FRONTEND_IMAGE}"
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - app-network
+    ports:
+      - "${FRONTEND_PORT}:3000"
+    environment:
+      API_URL: "${API_URL}"
+      PORT: "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "${FRONTEND_CPU_LIMIT}"
+          memory: "${FRONTEND_MEMORY_LIMIT}"
+
+# ── Named internal bridge network ─────────────────────────────────────────────
+networks:
+  app-network:
+    driver: bridge

@@ -1,0 +1,365 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs for the same ref so only the latest commit matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: localhost:5000
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 1 – Lint
+# ══════════════════════════════════════════════════════════════════════════════
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+
+      # ── Python / flake8 ────────────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install flake8
+        run: pip install flake8==7.0.0
+
+      - name: Lint Python (flake8)
+        run: flake8 api/ tests/ --max-line-length=120 --extend-ignore=E203
+
+      # ── JavaScript / ESLint ────────────────────────────────────────────────
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies (including dev)
+        working-directory: frontend
+        run: npm install
+
+      - name: Lint JavaScript (ESLint)
+        working-directory: frontend
+        run: npm run lint
+
+      # ── Dockerfiles / Hadolint ────────────────────────────────────────────
+      - name: Install Hadolint
+        run: |
+          curl -sSLo /usr/local/bin/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          chmod +x /usr/local/bin/hadolint
+
+      - name: Lint API Dockerfile (Hadolint)
+        run: hadolint api/Dockerfile
+
+      - name: Lint frontend Dockerfile (Hadolint)
+        run: hadolint frontend/Dockerfile
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 2 – Test
+# ══════════════════════════════════════════════════════════════════════════════
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install API dependencies and test tooling
+        run: |
+          pip install \
+            -r api/requirements.txt \
+            pytest==8.2.0 \
+            pytest-cov==5.0.0
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/test_api.py \
+            -v \
+            --cov=api \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload coverage report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 3 – Build
+# ══════════════════════════════════════════════════════════════════════════════
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: test
+
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Restore Docker layer cache – API
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-api
+          key: ${{ runner.os }}-buildx-api-${{ hashFiles('api/**') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-api-
+
+      - name: Restore Docker layer cache – frontend
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-frontend
+          key: ${{ runner.os }}-buildx-frontend-${{ hashFiles('frontend/**') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-frontend-
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./api
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/api:${{ github.sha }}
+            ${{ env.REGISTRY }}/api:latest
+          cache-from: type=local,src=/tmp/.buildx-cache-api
+          cache-to: type=local,dest=/tmp/.buildx-cache-api-new,mode=max
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/frontend:${{ github.sha }}
+            ${{ env.REGISTRY }}/frontend:latest
+          cache-from: type=local,src=/tmp/.buildx-cache-frontend
+          cache-to: type=local,dest=/tmp/.buildx-cache-frontend-new,mode=max
+
+      - name: Rotate layer cache (prevents unbounded growth)
+        run: |
+          rm -rf /tmp/.buildx-cache-api
+          mv /tmp/.buildx-cache-api-new /tmp/.buildx-cache-api
+          rm -rf /tmp/.buildx-cache-frontend
+          mv /tmp/.buildx-cache-frontend-new /tmp/.buildx-cache-frontend
+
+      - name: Save API image as tarball
+        run: |
+          docker pull ${{ env.REGISTRY }}/api:${{ github.sha }}
+          docker save ${{ env.REGISTRY }}/api:${{ github.sha }} \
+            -o /tmp/api-image.tar
+
+      - name: Save frontend image as tarball
+        run: |
+          docker pull ${{ env.REGISTRY }}/frontend:${{ github.sha }}
+          docker save ${{ env.REGISTRY }}/frontend:${{ github.sha }} \
+            -o /tmp/frontend-image.tar
+
+      - name: Upload image tarballs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images-${{ github.sha }}
+          path: /tmp/*-image.tar
+          retention-days: 1
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 4 – Security Scan
+# ══════════════════════════════════════════════════════════════════════════════
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+
+      - name: Download image tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images-${{ github.sha }}
+          path: /tmp
+
+      - name: Load images into Docker daemon
+        run: |
+          docker load -i /tmp/api-image.tar
+          docker load -i /tmp/frontend-image.tar
+          docker tag ${{ env.REGISTRY }}/api:${{ github.sha }}      api:${{ github.sha }}
+          docker tag ${{ env.REGISTRY }}/frontend:${{ github.sha }} frontend:${{ github.sha }}
+
+      - name: Scan API image with Trivy
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: "api:${{ github.sha }}"
+          format: sarif
+          output: api-trivy.sarif
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
+
+      - name: Scan frontend image with Trivy
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: "frontend:${{ github.sha }}"
+          format: sarif
+          output: frontend-trivy.sarif
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
+
+      - name: Scan Redis image with Trivy
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: "redis:7-alpine"
+          format: sarif
+          output: redis-trivy.sarif
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
+
+      - name: Upload SARIF results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif-${{ github.sha }}
+          path: "*.sarif"
+          retention-days: 14
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 5 – Integration Test
+# ══════════════════════════════════════════════════════════════════════════════
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: security-scan
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+
+      - name: Download image tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images-${{ github.sha }}
+          path: /tmp
+
+      - name: Load images and tag for compose
+        run: |
+          docker load -i /tmp/api-image.tar
+          docker load -i /tmp/frontend-image.tar
+          docker tag ${{ env.REGISTRY }}/api:${{ github.sha }}      api:latest
+          docker tag ${{ env.REGISTRY }}/frontend:${{ github.sha }} frontend:latest
+
+      - name: Create .env from example with CI overrides
+        run: |
+          cp .env.example .env
+          sed -i 's|^API_IMAGE=.*|API_IMAGE=api:latest|'      .env
+          sed -i 's|^FRONTEND_IMAGE=.*|FRONTEND_IMAGE=frontend:latest|' .env
+
+      - name: Start full stack
+        run: docker compose up -d
+
+      - name: Wait for all services to be healthy (max 120 s)
+        run: |
+          TIMEOUT=120
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            UNHEALTHY=$(docker compose ps --format json \
+              | python3 -c "
+          import sys, json
+          services = [json.loads(l) for l in sys.stdin if l.strip()]
+          unhealthy = [s['Name'] for s in services if s.get('Health','') not in ('healthy','')]
+          print(len(unhealthy))
+          " 2>/dev/null || echo "99")
+            if [ "$UNHEALTHY" -eq 0 ]; then
+              echo "All services healthy after ${ELAPSED}s"
+              break
+            fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          docker compose ps
+
+      - name: Run integration test script
+        run: |
+          bash tests/integration_test.sh
+        env:
+          FRONTEND_URL: http://localhost:3000
+          JOB_TIMEOUT: "30"
+
+      - name: Tear down stack (always runs)
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 6 – Deploy  (main branch only)
+# ══════════════════════════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: integration-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Check out source code
+        uses: actions/checkout@v4
+
+      - name: Download image tarballs
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images-${{ github.sha }}
+          path: /tmp
+
+      - name: Load images into Docker daemon
+        run: |
+          docker load -i /tmp/api-image.tar
+          docker load -i /tmp/frontend-image.tar
+          docker tag ${{ env.REGISTRY }}/api:${{ github.sha }}      api:${{ github.sha }}
+          docker tag ${{ env.REGISTRY }}/frontend:${{ github.sha }} frontend:${{ github.sha }}
+
+      - name: Create deployment .env
+        run: |
+          cp .env.example .env
+          sed -i "s|^API_IMAGE=.*|API_IMAGE=api:${{ github.sha }}|"           .env
+          sed -i "s|^FRONTEND_IMAGE=.*|FRONTEND_IMAGE=frontend:${{ github.sha }}|" .env
+
+      - name: Perform rolling update
+        env:
+          DEPLOY_TIMEOUT: "60"
+        run: |
+          bash scripts/rolling-update.sh \
+            "${{ github.sha }}" \
+            "$DEPLOY_TIMEOUT"

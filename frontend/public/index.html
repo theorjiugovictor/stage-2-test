@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Job Queue</title>
+  <style>
+    body { font-family: sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    input, textarea { width: 100%; padding: .5rem; margin: .5rem 0; box-sizing: border-box; }
+    button { padding: .5rem 1.2rem; cursor: pointer; }
+    #result { margin-top: 1rem; background: #f4f4f4; padding: 1rem; border-radius: 4px; white-space: pre-wrap; }
+    .status-completed { color: green; font-weight: bold; }
+    .status-pending, .status-processing { color: orange; }
+    .status-error { color: red; }
+  </style>
+</head>
+<body>
+  <h1>Job Queue</h1>
+  <form id="job-form">
+    <label for="payload">Job Payload:</label>
+    <textarea id="payload" rows="3" placeholder="Enter job payload..."></textarea>
+    <button type="submit">Submit Job</button>
+  </form>
+  <div id="result" hidden></div>
+
+  <script>
+    const form = document.getElementById('job-form');
+    const result = document.getElementById('result');
+
+    function show(text, cls) {
+      result.textContent = text;
+      result.className = cls || '';
+      result.hidden = false;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = document.getElementById('payload').value.trim();
+      show('Submitting…');
+
+      try {
+        const res = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload }),
+        });
+        const data = await res.json();
+        if (!res.ok) { show('Error: ' + JSON.stringify(data), 'status-error'); return; }
+
+        const jobId = data.job_id;
+        show(`Job submitted: ${jobId}\nStatus: pending…`);
+        pollStatus(jobId);
+      } catch (err) {
+        show('Network error: ' + err.message, 'status-error');
+      }
+    });
+
+    async function pollStatus(jobId) {
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const res = await fetch(`/api/jobs/${jobId}`);
+          const data = await res.json();
+          show(`Job: ${jobId}\nStatus: ${data.status}`, `status-${data.status}`);
+          if (data.status === 'completed') return;
+        } catch (err) {
+          show('Poll error: ' + err.message, 'status-error');
+          return;
+        }
+      }
+      show(`Job ${jobId} did not complete within 30 s.`, 'status-error');
+    }
+  </script>
+</body>
+</html>
