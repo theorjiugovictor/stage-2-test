@@ -12,7 +12,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import time
 import urllib.request
 from pathlib import Path
 
@@ -72,17 +71,14 @@ POINTS = {
     "all_steps_named":       2,
 
     # ── Functional checks (bonus points on top of static score) ──────────────
-    "pytest_all_pass":         5,
-    "api_image_builds":        5,
-    "frontend_image_builds":   5,
-    "ci_pipeline_green":       5,
+    "pytest_all_pass":   5,
+    "ci_pipeline_green": 5,
 }
 
 # Static-only total (Dockerfile points × 2 for api + frontend)
 _DF_KEYS = {"multi_stage", "named_nonroot_user", "healthcheck",
             "no_env_copied", "slim_alpine_base", "user_creation_cmd"}
-_FUNC_KEYS = {"pytest_all_pass", "api_image_builds",
-              "frontend_image_builds", "ci_pipeline_green"}
+_FUNC_KEYS = {"pytest_all_pass", "ci_pipeline_green"}
 
 STATIC_TOTAL  = sum(v for k, v in POINTS.items() if k not in _FUNC_KEYS) \
                 + sum(POINTS[k] for k in _DF_KEYS)   # Dockerfile counted twice
@@ -301,38 +297,6 @@ def _run_pytest(repo: Path) -> dict:
         shutil.rmtree(venv, ignore_errors=True)
 
 
-def _docker_build(repo: Path, service: str) -> dict:
-    """
-    Run `docker build` for the given service directory.
-    Cleans up the test image on success.
-    """
-    context = repo / service
-    if not (context / 'Dockerfile').exists():
-        return {'built': False, 'error': 'Dockerfile not found', 'duration_s': 0}
-
-    tag   = f'scorer-{service}-test:latest'
-    start = time.monotonic()
-    try:
-        r = _run(['docker', 'build', '--no-cache', '-t', tag, '.'],
-                 cwd=str(context), timeout=300)
-        dur = round(time.monotonic() - start, 1)
-        if r.returncode == 0:
-            subprocess.run(['docker', 'rmi', '-f', tag],
-                           capture_output=True, timeout=15)
-            return {'built': True, 'duration_s': dur}
-        # Return last 400 chars of stderr as the error snippet
-        return {'built': False,
-                'error': (r.stderr or r.stdout)[-400:].strip(),
-                'duration_s': dur}
-    except subprocess.TimeoutExpired:
-        return {'built': False, 'error': 'Build timed out (5 min)',
-                'duration_s': round(time.monotonic() - start, 1)}
-    except FileNotFoundError:
-        return {'built': False, 'error': 'docker not found — is Docker running?',
-                'duration_s': 0}
-    except Exception as exc:
-        return {'built': False, 'error': str(exc), 'duration_s': 0}
-
 
 def _check_ci_status(repo_url: str) -> dict:
     """
@@ -419,10 +383,8 @@ def score_repo(repo_url: str) -> dict:
         out['test_count'] = test_count
 
         # ── Functional ────────────────────────────────────────────────────────
-        out['func_pytest']    = _run_pytest(repo)
-        out['func_api_build'] = _docker_build(repo, 'api')
-        out['func_fe_build']  = _docker_build(repo, 'frontend')
-        out['func_ci']        = _check_ci_status(repo_url)
+        out['func_pytest'] = _run_pytest(repo)
+        out['func_ci']     = _check_ci_status(repo_url)
 
         return out
 

@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from scorer import POINTS, STATIC_TOTAL, FUNC_TOTAL, score_repo
+from scorer import POINTS, score_repo
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -47,8 +47,6 @@ def _build_report(results: dict, repo_url: str) -> str:
 
     # Functional results
     f_pytest = results.get("func_pytest") or {}
-    f_api    = results.get("func_api_build") or {}
-    f_fe     = results.get("func_fe_build") or {}
     f_ci     = results.get("func_ci") or {}
 
     out = []
@@ -159,34 +157,6 @@ def _build_report(results: dict, repo_url: str) -> str:
     fn_e += pytest_pts
     fn_p += POINTS['pytest_all_pass']
 
-    # docker build – api
-    if not f_api.get('built') and 'docker not found' in (f_api.get('error') or ''):
-        out.append(f"  ⚠️  docker build skipped — Docker not available on scorer host")
-        fn_p += POINTS['api_image_builds']
-    elif f_api.get('built'):
-        dur = f_api.get('duration_s', '?')
-        out.append(f"  ✅ API image builds ({dur} s) (+{POINTS['api_image_builds']})")
-        fn_e += POINTS['api_image_builds']
-        fn_p += POINTS['api_image_builds']
-    else:
-        err = (f_api.get('error') or 'unknown')[:120]
-        out.append(f"  ❌ API image build failed — `{err}` (+0)")
-        fn_p += POINTS['api_image_builds']
-
-    # docker build – frontend
-    if not f_fe.get('built') and 'docker not found' in (f_fe.get('error') or ''):
-        out.append(f"  ⚠️  docker build skipped — Docker not available on scorer host")
-        fn_p += POINTS['frontend_image_builds']
-    elif f_fe.get('built'):
-        dur = f_fe.get('duration_s', '?')
-        out.append(f"  ✅ Frontend image builds ({dur} s) (+{POINTS['frontend_image_builds']})")
-        fn_e += POINTS['frontend_image_builds']
-        fn_p += POINTS['frontend_image_builds']
-    else:
-        err = (f_fe.get('error') or 'unknown')[:120]
-        out.append(f"  ❌ Frontend image build failed — `{err}` (+0)")
-        fn_p += POINTS['frontend_image_builds']
-
     # GitHub Actions latest run
     ci_pts = POINTS['ci_pipeline_green']
     fn_p  += ci_pts
@@ -290,8 +260,7 @@ def handle_submission(message, say, client):
 
     say(
         f"⏳ <@{user_id}> Submission received! Scoring `{url}`…\n"
-        f"_This includes running pytest and building Docker images — "
-        f"expect results in ~3-5 minutes._"
+        f"_Running pytest and checking CI status — expect results in ~30-60 seconds._"
     )
 
     threading.Thread(
