@@ -70,20 +70,19 @@ POINTS = {
     "secrets_not_hardcoded": 2,
     "all_steps_named":       2,
 
+    # Required deliverables present in repo
+    "has_readme":      2,
+    "has_fixes_md":    2,
+    "has_env_example": 2,
+
     # ── Functional checks (bonus points on top of static score) ──────────────
     "pytest_all_pass":   5,
     "ci_pipeline_green": 5,
 }
 
-# Static-only total (Dockerfile points × 2 for api + frontend)
-_DF_KEYS = {"multi_stage", "named_nonroot_user", "healthcheck",
-            "no_env_copied", "slim_alpine_base", "user_creation_cmd"}
+_DF_KEYS   = {"multi_stage", "named_nonroot_user", "healthcheck",
+              "no_env_copied", "slim_alpine_base", "user_creation_cmd"}
 _FUNC_KEYS = {"pytest_all_pass", "ci_pipeline_green"}
-
-STATIC_TOTAL  = sum(v for k, v in POINTS.items() if k not in _FUNC_KEYS) \
-                + sum(POINTS[k] for k in _DF_KEYS)   # Dockerfile counted twice
-FUNC_TOTAL    = sum(POINTS[k] for k in _FUNC_KEYS)
-GRAND_TOTAL   = STATIC_TOTAL + FUNC_TOTAL
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -381,6 +380,13 @@ def score_repo(repo_url: str) -> dict:
         test_results, test_count = _check_tests(repo)
         out['tests']      = test_results
         out['test_count'] = test_count
+
+        # ── Required deliverables ─────────────────────────────────────────────
+        out['deliverables'] = {
+            'has_readme':      (repo / 'README.md').exists(),
+            'has_fixes_md':    (repo / 'FIXES.md').exists(),
+            'has_env_example': (repo / '.env.example').exists(),
+        }
 
         # ── Functional ────────────────────────────────────────────────────────
         out['func_pytest'] = _run_pytest(repo)

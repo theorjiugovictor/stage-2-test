@@ -38,31 +38,44 @@ def _build_report(results: dict, repo_url: str) -> str:
     if "error" in results:
         return f"❌ *Scoring failed*\n>{results['error']}"
 
-    api_df   = results.get("api_dockerfile")
-    fe_df    = results.get("fe_dockerfile")
-    compose  = results.get("compose")
-    pipeline = results.get("pipeline") or {}
-    tests    = results.get("tests") or {}
-    tc       = results.get("test_count", 0)
+    api_df       = results.get("api_dockerfile")
+    fe_df        = results.get("fe_dockerfile")
+    compose      = results.get("compose")
+    pipeline     = results.get("pipeline") or {}
+    tests        = results.get("tests") or {}
+    tc           = results.get("test_count", 0)
+    deliverables = results.get("deliverables") or {}
 
     # Functional results
     f_pytest = results.get("func_pytest") or {}
     f_ci     = results.get("func_ci") or {}
 
     out = []
-    s1_e = s1_p = s2_e = s2_p = fn_e = fn_p = 0
+    s0_e = s0_p = s1_e = s1_p = s2_e = s2_p = fn_e = fn_p = 0
 
     def add(label, key, pts_map, source, bucket):
-        nonlocal s1_e, s1_p, s2_e, s2_p
+        nonlocal s0_e, s0_p, s1_e, s1_p, s2_e, s2_p
         pts    = pts_map[key]
         passed = bool((source or {}).get(key, False))
-        if bucket == 1:
+        if bucket == 0:
+            s0_e += pts if passed else 0
+            s0_p += pts
+        elif bucket == 1:
             s1_e += pts if passed else 0
             s1_p += pts
         else:
             s2_e += pts if passed else 0
             s2_p += pts
         out.append(f"  {'✅' if passed else '❌'} {label} (+{pts})")
+
+    # ── Deliverables ──────────────────────────────────────────────────────────
+    out.append("\n*Required Deliverables*")
+    for label, key in [
+        ("README.md present",    "has_readme"),
+        ("FIXES.md present",     "has_fixes_md"),
+        (".env.example present", "has_env_example"),
+    ]:
+        add(label, key, POINTS, deliverables, 0)
 
     # ── Section 1: Containerisation ──────────────────────────────────────────
     df_rows = [
@@ -183,8 +196,8 @@ def _build_report(results: dict, repo_url: str) -> str:
                        f"\n  🔗 {run_url}")
 
     # ── Totals & grade ────────────────────────────────────────────────────────
-    static_e = s1_e + s2_e
-    static_p = s1_p + s2_p
+    static_e = s0_e + s1_e + s2_e
+    static_p = s0_p + s1_p + s2_p
     total_e  = static_e + fn_e
     total_p  = static_p + fn_p
 
@@ -202,11 +215,17 @@ def _build_report(results: dict, repo_url: str) -> str:
         f"🔗 Repo: <{repo_url}|{repo_url}>",
         "",
         f"*Total: {total_e}/{total_p}  ({pct}%)  —  Grade: {grade}*",
-        f"  Static checks:     {static_e}/{static_p}",
+        f"  Deliverables:      {s0_e}/{s0_p}",
+        f"  Containerisation:  {s1_e}/{s1_p}",
+        f"  CI/CD Pipeline:    {s2_e}/{s2_p}",
         f"  Functional checks: {fn_e}/{fn_p}",
         "",
-        f"━━━━ Section 1 — Containerisation  ({s1_e}/{s1_p}) ━━━━",
+        f"━━━━ Deliverables  ({s0_e}/{s0_p}) ━━━━",
     ]
+
+    # Insert section 1 divider after deliverables block
+    first_s1 = next((i for i, l in enumerate(out) if '*API Dockerfile*' in l), len(out))
+    out.insert(first_s1, f"\n━━━━ Section 1 — Containerisation  ({s1_e}/{s1_p}) ━━━━")
 
     # Insert section 2 divider
     first_pipe = next((i for i, l in enumerate(out) if '*Lint Stage*' in l), len(out))

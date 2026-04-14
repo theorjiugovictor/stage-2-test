@@ -1,5 +1,8 @@
 name: CI/CD Pipeline
 
+# All jobs use ubuntu-latest (GitHub-hosted, free tier).
+# No self-hosted runners are used anywhere in this pipeline.
+
 on:
   push:
     branches: ["**"]
